@@ -1,0 +1,6 @@
+aiohttp
+aiokafka>=0.10
+clickhouse-connect>=0.7
+python-dotenv>=1.0
+asyncpg>=0.29
+pydantic>=2.6
