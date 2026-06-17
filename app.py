@@ -36,6 +36,7 @@ async def consume() -> None:
         value_deserializer=lambda b: json.loads(b.decode("utf-8")),
         enable_auto_commit=False,
         auto_offset_reset="earliest",
+        max_partition_fetch_bytes=config.KAFKA_MAX_FETCH_BYTES,
         **config.kafka_auth_kwargs(),
     )
     await consumer.start()

@@ -29,6 +29,9 @@ class KafkaProducer:
             value_serializer=lambda v: json.dumps(v, default=str).encode("utf-8"),
             key_serializer=lambda k: k.encode("utf-8") if isinstance(k, str) else k,
             acks="all",
+            # Persisted-trace fan-out embeds the full event, which can be multi-MB.
+            max_request_size=config.KAFKA_MAX_REQUEST_SIZE,
+            compression_type="gzip",
             **config.kafka_auth_kwargs(),
             enable_idempotence=True,
         )

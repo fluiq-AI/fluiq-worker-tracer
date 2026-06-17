@@ -36,6 +36,27 @@ _MODEL_PREFIX_PROVIDERS = (
 )
 
 
+def normalize_model_name(model: Any) -> Any:
+    """Strip Vertex AI resource-path prefixes down to the bare model id.
+
+    Vertex's ``GenerativeModel`` reports its model as a resource path, e.g.
+    ``publishers/google/models/gemini-2.5-flash`` (or the fully-qualified
+    ``projects/<p>/locations/<l>/publishers/google/models/...``). The price
+    table and the UI both key on the bare id (``gemini-2.5-flash``), so the
+    prefixed form breaks cost lookup and reads poorly in the trace table. No
+    legitimate model id contains ``/models/`` or a leading ``models/``, so this
+    is safe to apply to every provider. Non-string / unprefixed values pass
+    through unchanged.
+    """
+    if not isinstance(model, str):
+        return model
+    if "/models/" in model:
+        return model.rsplit("/models/", 1)[-1]
+    if model.startswith("models/"):
+        return model[len("models/"):]
+    return model
+
+
 def _provider_from_model(model: Any) -> Optional[str]:
     """Resolve the real provider from the model id for OpenAI-compatible vendors."""
     if not model:
@@ -153,7 +174,7 @@ async def estimate_trace_cost(event: dict[str, Any]) -> Optional[dict[str, Any]]
     if not isinstance(event, dict):
         return None
 
-    model = event.get("model")
+    model = normalize_model_name(event.get("model"))
     provider = _resolve_provider(event.get("integration"), model)
     if not provider or not model:
         return None

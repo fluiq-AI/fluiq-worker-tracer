@@ -6,7 +6,7 @@ from typing import Any
 
 from db.clickhouse import clickhouse_client
 from db.kafka import kafka_producer
-from jobs.helper.cost_estimator import estimate_trace_cost
+from jobs.helper.cost_estimator import estimate_trace_cost, normalize_model_name
 from jobs.helper.root_resolver import root_resolver
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,11 @@ async def ingest_trace(message: dict[str, Any]) -> None:
     if isinstance(event, dict):
         event["trace_id"] = trace_id
         event["root_trace_id"] = root_trace_id
+        # Normalise Vertex AI resource-path model names (e.g.
+        # "publishers/google/models/gemini-2.5-flash") to the bare id so the
+        # stored event reads cleanly in the UI and the cost lookup matches.
+        if event.get("model"):
+            event["model"] = normalize_model_name(event["model"])
         message["event"] = event
     message["trace_id"] = trace_id
     message["root_trace_id"] = root_trace_id

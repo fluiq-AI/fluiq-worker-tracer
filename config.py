@@ -14,6 +14,12 @@ KAFKA_SASL_MECHANISM=os.getenv("KAFKA_SASL_MECHANISM", "SCRAM-SHA-512")
 KAFKA_SASL_USERNAME=os.getenv("KAFKA_SASL_USERNAME")
 KAFKA_SASL_PASSWORD=os.getenv("KAFKA_SASL_PASSWORD")
 
+# Match the API's Kafka sizing: trace events can be a few MB, so the consumer's
+# per-partition fetch ceiling and the re-publish producer's request size must be
+# raised above the ~1MB default. Keep <= broker message.max.bytes / fetch sizes.
+KAFKA_MAX_REQUEST_SIZE = int(os.getenv("KAFKA_MAX_REQUEST_SIZE", str(10 * 1024 * 1024)))
+KAFKA_MAX_FETCH_BYTES = int(os.getenv("KAFKA_MAX_FETCH_BYTES", str(10 * 1024 * 1024)))
+
 
 def kafka_auth_kwargs() -> dict:
     """aiokafka security kwargs derived from env, shared by consumer + producer.
