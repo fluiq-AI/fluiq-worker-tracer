@@ -55,6 +55,17 @@ class ClickHouseClient:
         if self._client is None:
             await self.start()
         target = table or self.default_table
+        # Retention window (days) stamped by the API from the org's tier:
+        # Free = 14, paid = 36500 (~never). Fall back to the "keep forever"
+        # sentinel if the field is missing so we never delete unexpectedly.
+        retention_days = int(trace.get("retention_days") or 36500)
+        # Denormalized agent-run identity: is_root (1 = own-root or orphan root)
+        # + agent_key/agent_kind, stamped so reads skip the whole-org NOT IN
+        # scan and JSON extraction. Default to root/empty if a producer omits
+        # them (biases toward visibility, matching the orphan-root philosophy).
+        is_root = int(trace.get("is_root", 1))
+        agent_key = str(trace.get("agent_key") or "")
+        agent_kind = str(trace.get("agent_kind") or "")
         await self._client.insert(
             target,
             [[
@@ -63,6 +74,10 @@ class ClickHouseClient:
                 trace.get("trace_id"),
                 trace.get("root_trace_id") or trace.get("trace_id"),
                 trace.get("event") or {},
+                retention_days,
+                is_root,
+                agent_key,
+                agent_kind,
             ]],
             column_names=[
                 "organization_id",
@@ -70,6 +85,10 @@ class ClickHouseClient:
                 "trace_id",
                 "root_trace_id",
                 "event",
+                "retention_days",
+                "is_root",
+                "agent_key",
+                "agent_kind",
             ],
         )
 

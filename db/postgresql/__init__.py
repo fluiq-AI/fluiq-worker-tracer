@@ -61,6 +61,12 @@ class PostgresClient:
         self._pool = None
         logger.info("[POSTGRES] Connection pool stopped")
 
+    def acquire(self):
+        """Return the pool's acquire() context manager."""
+        if self._pool is None:
+            raise RuntimeError("PostgresClient pool not started; call start() first")
+        return self._pool.acquire()
+
     async def fetch_price(
         self,
         provider: str,

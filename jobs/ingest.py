@@ -7,9 +7,31 @@ from typing import Any
 from db.clickhouse import clickhouse_client
 from db.kafka import kafka_producer
 from jobs.helper.cost_estimator import estimate_trace_cost, normalize_model_name
+from jobs.helper.dataset_autoappend import maybe_autoappend
 from jobs.helper.root_resolver import root_resolver
 
 logger = logging.getLogger(__name__)
+
+
+def _agent_identity(event: dict[str, Any]) -> tuple[str, str]:
+    """Derive (agent_key, agent_kind) from an event, mirroring the Agents query.
+
+    Precedence matches the old read-side multiIf(): an explicit @trace
+    ``function`` name, else a chain ``name``, else a LangGraph node. Returns
+    ("", "") for spans that carry none of these (e.g. bare LLM calls), which the
+    Agents view filters out with ``agent_key != ''``.
+    """
+    fn = str(event.get("function") or "")
+    if fn:
+        return fn, "function"
+    nm = str(event.get("name") or "")
+    if nm:
+        return nm, "chain"
+    langgraph = event.get("langgraph")
+    lg = str(langgraph.get("langgraph_node") or "") if isinstance(langgraph, dict) else ""
+    if lg:
+        return lg, "langgraph_node"
+    return "", ""
 
 
 async def ingest_trace(message: dict[str, Any]) -> None:
@@ -34,11 +56,27 @@ async def ingest_trace(message: dict[str, Any]) -> None:
     status = event.get("status") if isinstance(event, dict) else None
     is_running = status == "running"
 
-    root_trace_id = await root_resolver.resolve(
+    root_trace_id, is_root = await root_resolver.resolve_with_flag(
         trace_id=trace_id,
         parent_id=parent_id,
         organization_id=organization_id,
     )
+    # A span that is its own root is always a root — the fundamental definition,
+    # matching the old read-time ``trace_id = root_trace_id`` check. This guards
+    # against a self-referential or stale parent_id fooling the parent-based
+    # resolver (e.g. CrewAI's crew span emits parent_id == its own trace_id,
+    # which otherwise stamps is_root=0 and hides the run from the roots list).
+    if root_trace_id == trace_id:
+        is_root = True
+
+    # Denormalize the agent-run identity onto the row so the read side can
+    # filter/group on plain columns instead of re-extracting these JSON paths
+    # (and running a whole-org NOT IN) on every dashboard load. Mirrors the
+    # multiIf() the Agents query used: function > name > langgraph_node.
+    agent_key, agent_kind = _agent_identity(event if isinstance(event, dict) else {})
+    message["is_root"] = 1 if is_root else 0
+    message["agent_key"] = agent_key
+    message["agent_kind"] = agent_kind
 
     if isinstance(event, dict):
         event["trace_id"] = trace_id
@@ -104,6 +142,12 @@ async def ingest_trace(message: dict[str, Any]) -> None:
         logger.exception(
             "[TRACER] Failed to publish traces.persisted trace_id=%s", trace_id,
         )
+
+    # Auto-append this run to any dataset its agent is linked to (Connect Agents).
+    # Root traces only — the agent identity is derived from the root event, and
+    # is best-effort so a hiccup never blocks ingest.
+    if trace_id == root_trace_id:
+        await maybe_autoappend(event if isinstance(event, dict) else {}, organization_id, trace_id)
 
     try:
         breakdown = await estimate_trace_cost(event)

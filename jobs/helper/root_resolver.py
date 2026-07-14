@@ -60,16 +60,40 @@ class RootTraceResolver:
         parent_id: Optional[str],
         organization_id: Optional[str] = None,
     ) -> str:
+        root, _ = await self.resolve_with_flag(trace_id, parent_id, organization_id)
+        return root
+
+    async def resolve_with_flag(
+        self,
+        trace_id: str,
+        parent_id: Optional[str],
+        organization_id: Optional[str] = None,
+    ) -> tuple[str, bool]:
+        """Resolve root_trace_id and whether this span is an agent-run root.
+
+        ``is_root`` is stamped so the read side can drop its whole-org
+        ``root_trace_id NOT IN (SELECT trace_id …)`` scan and just filter
+        ``is_root = 1``. The three cases map exactly onto that heuristic:
+
+          * no parent            -> its own root                  (is_root=1)
+          * parent resolves      -> a real child of a known run   (is_root=0)
+          * parent unresolvable  -> orphan root (phantom parent)  (is_root=1)
+
+        The orphan case is what the read-side NOT IN existed to catch: a span
+        whose root_trace_id points at a parent that was never persisted
+        (out-of-order delivery, a parent stuck running/errored, or a synthetic
+        chain id). Marking it a root here keeps it visible in Agents/Traces.
+        """
         if not parent_id:
-            return trace_id
+            return trace_id, True
 
         cached = self._get(parent_id)
         if cached:
-            return cached
+            return cached, False
 
         if not _looks_like_uuid(parent_id):
-            # Non-UUID parent (shouldn't normally happen) — treat as own root.
-            return parent_id
+            # Non-UUID parent (synthetic chain id, no traces row) — orphan root.
+            return parent_id, True
 
         try:
             root = await _query_parent_root(parent_id, organization_id)
@@ -79,11 +103,12 @@ class RootTraceResolver:
 
         if root:
             self._put(parent_id, root)
-            return root
+            return root, False
 
         # Parent not yet persisted (out-of-order delivery) or synthetic
-        # chain_id with no traces row — use parent_id as the root anchor.
-        return parent_id
+        # chain_id with no traces row — use parent_id as the root anchor and
+        # treat this span as an orphan root.
+        return parent_id, True
 
 
 def _looks_like_uuid(value: str) -> bool:
