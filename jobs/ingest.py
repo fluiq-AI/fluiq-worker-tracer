@@ -12,6 +12,24 @@ from jobs.helper.root_resolver import root_resolver
 
 logger = logging.getLogger(__name__)
 
+# Stable namespace for mapping non-UUID identifiers to deterministic UUIDs. The
+# API boundary already normalizes these, but a defensive coercion here keeps a
+# malformed id from any producer from crashing the consumer on the UUID column
+# (ClickHouse stores trace_id/root_trace_id as UUID) and stalling the partition.
+_TRACE_NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://getfluiq.com/trace-id")
+
+
+def _coerce_uuid(value: Any) -> Any:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return str(uuid.UUID(s))
+    except (ValueError, AttributeError, TypeError):
+        return str(uuid.uuid5(_TRACE_NS, s))
+
 
 def _agent_identity(event: dict[str, Any]) -> tuple[str, str]:
     """Derive (agent_key, agent_kind) from an event, mirroring the Agents query.
@@ -50,8 +68,8 @@ async def ingest_trace(message: dict[str, Any]) -> None:
     pollute cost/agent rollups, so we publish them to the SSE broker only.
     """
     event = message.get("event") or {}
-    trace_id = (event.get("trace_id") if isinstance(event, dict) else None) or str(uuid.uuid4())
-    parent_id = event.get("parent_id") if isinstance(event, dict) else None
+    trace_id = _coerce_uuid(event.get("trace_id") if isinstance(event, dict) else None) or str(uuid.uuid4())
+    parent_id = _coerce_uuid(event.get("parent_id") if isinstance(event, dict) else None)
     organization_id = message.get("organization_id")
     status = event.get("status") if isinstance(event, dict) else None
     is_running = status == "running"
